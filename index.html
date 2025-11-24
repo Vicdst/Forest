@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monde Vallonné Multijoueur - Vicdst</title>
+    <style>
+        body { margin: 0; overflow: hidden; font-family: 'Arial', sans-serif; }
+        canvas { display: block; }
+        
+        #ui-container {
+            position: absolute; top: 20px; left: 20px; color: white;
+            text-shadow: 1px 1px 2px black; pointer-events: none;
+            z-index: 10;
+        }
+        #signature {
+            position: absolute; bottom: 10px; right: 10px;
+            color: rgba(255, 255, 255, 0.6); font-weight: bold;
+            text-shadow: 1px 1px 1px black;
+            z-index: 10;
+        }
+        #status {
+            background-color: rgba(0,0,0,0.5); padding: 5px 10px; border-radius: 5px;
+            font-size: 12px; margin-top: 5px; display: inline-block;
+        }
+
+        /* STYLE DE LA BOUSSOLE / RADAR */
+        #compass-container {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            width: 120px;
+            height: 120px;
+            background-color: rgba(0, 0, 0, 0.5);
+            border-radius: 50%;
+            border: 2px solid white;
+            z-index: 10;
+            overflow: hidden; /* Cache ce qui dépasse */
+        }
+        .blip {
+            position: absolute;
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+        }
+        #my-blip {
+            background-color: #00ff00; /* Moi en vert */
+            width: 8px; height: 8px;
+            top: 50%; left: 50%; /* Toujours au centre */
+            z-index: 2;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="ui-container">
+        <h1>La Vallée Multijoueur</h1>
+        <div>Flèches pour bouger.</div>
+        <div id="status">Connexion...</div>
+    </div>
+    
+    <div id="compass-container">
+        <div id="my-blip" class="blip"></div>
+        </div>
+
+    <div id="signature">Fait par vicdst</div>
+
+    <script src="/socket.io/socket.io.js"></script>
+
+    <script type="importmap">
+        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+    </script>
+
+    <script type="module">
+        import * as THREE from 'three';
+
+        const socket = io();
+        const otherPlayers = {}; 
+        const blips = {}; // Pour stocker les points sur la boussole
+        
+        // --- PARAMÈTRES DE LA CARTE ---
+        const MAP_SIZE = 200; // Taille totale de la carte (de -100 à +100)
+        const HALF_MAP = MAP_SIZE / 2;
+
+        socket.on('connect', () => {
+            document.getElementById('status').innerText = "Connecté (En ligne)";
+            document.getElementById('status').style.color = "#00ff00";
+        });
+
+        const scene = new THREE.Scene();
+        const skyColor = 0x87CEEB;
+        scene.background = new THREE.Color(skyColor);
+        scene.fog = new THREE.Fog(skyColor, 20, 80); // Brouillard
+
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.shadowMap.enabled = true;
+        document.body.appendChild(renderer.domElement);
+
+        // Lumières
+        const ambientLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
+        scene.add(ambientLight);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(50, 100, 50);
+        dirLight.castShadow = true;
+        // Optimisation ombres
+        dirLight.shadow.camera.top = 50; dirLight.shadow.camera.bottom = -50;
+        dirLight.shadow.camera.left = -50; dirLight.shadow.camera.right = 50;
+        dirLight.shadow.mapSize.width = 2048; dirLight.shadow.mapSize.height = 2048;
+        scene.add(dirLight);
+
+        // --- 1. GÉNÉRATION DU TERRAIN VALLONNÉ ---
+        // Fonction mathématique pour créer des collines
+        function getTerrainHeight(x, z) {
+            // Combinaison de Sinus et Cosinus pour faire des vagues
+            const y1 = Math.sin(x * 0.05) * 2;
+            const y2 = Math.cos(z * 0.05) * 2;
+            const y3 = Math.sin(x * 0.02 + z * 0.02) * 4; // Grandes collines
+            return Math.max(0, y1 + y2 + y3); // On garde y > 0 globalement
+        }
+
+        const geometry = new THREE.PlaneGeometry(MAP_SIZE, MAP_SIZE, 64, 64);
+        const count = geometry.attributes.position.count;
+        
+        // Appliquer la hauteur à chaque point du sol
+        for (let i = 0; i < count; i++) {
+            const x = geometry.attributes.position.getX(i);
+            const z = geometry.attributes.position.getY(i); // Attention, c'est Y dans le plan 2D avant rotation
+            // On calcule la hauteur
+            const h = getTerrainHeight(x, z);
+            geometry.attributes.position.setZ(i, h); // setZ car le plan n'est pas encore tourné
+        }
+        geometry.computeVertexNormals(); // Pour que la lumière réagisse bien aux bosses
+
+        const groundMaterial = new THREE.MeshStandardMaterial({ 
+            color: 0x55aa55, 
+            flatShading: true // Style "Low Poly"
+        });
+        const ground = new THREE.Mesh(geometry, groundMaterial);
+        ground.rotation.x = -Math.PI / 2;
+        ground.receiveShadow = true;
+        scene.add(ground);
+
+        // --- 2. LES MURS (BORDURES) ---
+        const wallMat = new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0.2, side: THREE.DoubleSide });
+        const wallGeo = new THREE.PlaneGeometry(MAP_SIZE, 20);
+        
+        // Créer 4 murs
+        const walls = new THREE.Group();
+        const w1 = new THREE.Mesh(wallGeo, wallMat); w1.position.z = -HALF_MAP;
+        const w2 = new THREE.Mesh(wallGeo, wallMat); w2.position.z = HALF_MAP;
+        const w3 = new THREE.Mesh(wallGeo, wallMat); w3.position.x = -HALF_MAP; w3.rotation.y = Math.PI/2;
+        const w4 = new THREE.Mesh(wallGeo, wallMat); w4.position.x = HALF_MAP; w4.rotation.y = Math.PI/2;
+        walls.add(w1, w2, w3, w4);
+        walls.position.y = 10; // Pour qu'ils soient hauts
+        scene.add(walls);
+
+
+        // --- ROBOT & ARBRES ---
+        function createRobot(color) {
+            const group = new THREE.Group();
+            const body = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: color }));
+            body.position.y = 0.5; body.castShadow = true; group.add(body);
+            const head = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.6, 0.6), new THREE.MeshStandardMaterial({ color: 0xFFD700 }));
+            head.position.y = 1.3; head.castShadow = true; group.add(head);
+            const eyeMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+            const e1 = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.1), eyeMat); e1.position.set(0.15, 1.4, 0.3); group.add(e1);
+            const e2 = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.1), eyeMat); e2.position.set(-0.15, 1.4, 0.3); group.add(e2);
+            return group;
+        }
+
+        const myPlayer = createRobot(0xFF6347);
+        scene.add(myPlayer);
+
+        // Arbres
+        function createTree() {
+            const grp = new THREE.Group();
+            const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.4, 1.5, 6), new THREE.MeshStandardMaterial({ color: 0x8B4513 }));
+            trunk.position.y = 0.75; trunk.castShadow = true; grp.add(trunk);
+            const leaves = new THREE.Mesh(new THREE.ConeGeometry(1.5, 3, 6), new THREE.MeshStandardMaterial({ color: 0x228B22 }));
+            leaves.position.y = 2.2; leaves.castShadow = true; grp.add(leaves);
+            return grp;
+        }
+
+        // On place les arbres aléatoirement DANS les limites
+        for(let i=0; i<100; i++){
+            const t = createTree();
+            const tx = (Math.random() - 0.5) * (MAP_SIZE - 10);
+            const tz = (Math.random() - 0.5) * (MAP_SIZE - 10);
+            
+            // Calculer la hauteur du sol à cet endroit pour poser l'arbre dessus
+            const ty = getTerrainHeight(tx, tz);
+            
+            t.position.set(tx, ty, tz);
+            scene.add(t);
+        }
+
+        // --- GESTION MULTIJOUEUR ---
+        function updateCompass(id, x, z) {
+            // Créer le blip si n'existe pas
+            if (!blips[id]) {
+                const el = document.createElement('div');
+                el.className = 'blip';
+                el.style.backgroundColor = 'red'; // Ennemis en rouge
+                document.getElementById('compass-container').appendChild(el);
+                blips[id] = el;
+            }
+            
+            // Calcul position relative pour la boussole
+            // La boussole fait 120px. Le centre est 60,60.
+            // On affiche une zone de rayon 50 autour du joueur
+            const radarRange = 50; 
+            const dx = x - myPlayer.position.x;
+            const dz = z - myPlayer.position.z;
+
+            // Conversion coordonnées monde -> coordonnées radar
+            // On divise par le range pour avoir un ratio, puis on multiplie par la taille du radar (60px rayon)
+            let rx = (dx / radarRange) * 60;
+            let ry = (dz / radarRange) * 60;
+
+            // Rotation du radar pour qu'il tourne avec nous
+            const cos = Math.cos(myPlayer.rotation.y);
+            const sin = Math.sin(myPlayer.rotation.y);
+            const rotX = rx * cos - ry * sin;
+            const rotY = rx * sin + ry * cos;
+
+            // Appliquer (avec limite pour ne pas sortir du rond)
+            const dist = Math.sqrt(rotX*rotX + rotY*rotY);
+            if (dist > 55) { // Si trop loin, on le colle au bord
+                // Optionnel : masquer si trop loin
+                blips[id].style.display = 'none';
+            } else {
+                blips[id].style.display = 'block';
+                blips[id].style.left = (60 - rotX) + 'px'; // Inversion X pour l'écran
+                blips[id].style.top = (60 + rotY) + 'px';
+            }
+        }
+
+        function addOtherPlayer(id, data) {
+            const robot = createRobot(data.color);
+            robot.position.set(data.x, data.y || 0, data.z); // Utiliser Y si dispo
+            otherPlayers[id] = robot;
+            scene.add(robot);
+        }
+
+        socket.on('currentPlayers', (players) => {
+            Object.keys(players).forEach((id) => {
+                if (id !== socket.id) addOtherPlayer(id, players[id]);
+            });
+        });
+        socket.on('newPlayer', (data) => addOtherPlayer(data.id, data.player));
+        socket.on('playerDisconnected', (id) => {
+            if (otherPlayers[id]) { scene.remove(otherPlayers[id]); delete otherPlayers[id]; }
+            if (blips[id]) { blips[id].remove(); delete blips[id]; }
+        });
+        socket.on('playerMoved', (data) => {
+            if (otherPlayers[data.id]) {
+                // On met à jour la position
+                const y = getTerrainHeight(data.x, data.z); // Le joueur suit le terrain
+                otherPlayers[data.id].position.set(data.x, y, data.z);
+                otherPlayers[data.id].rotation.y = data.rotation;
+                updateCompass(data.id, data.x, data.z);
+            }
+        });
+
+        // --- BOUCLE DE JEU ---
+        const keys = { ArrowUp:false, ArrowDown:false, ArrowLeft:false, ArrowRight:false };
+        window.addEventListener('keydown', e => { if(keys.hasOwnProperty(e.code)) keys[e.code]=true; });
+        window.addEventListener('keyup', e => { if(keys.hasOwnProperty(e.code)) keys[e.code]=false; });
+
+        let speed = 0; const maxSpeed = 0.3; const rotSpeed = 0.05;
+
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Mouvement
+            if (keys.ArrowUp) speed = Math.min(speed + 0.01, maxSpeed);
+            else if (keys.ArrowDown) speed = Math.max(speed - 0.01, -maxSpeed/2);
+            else speed = speed > 0 ? Math.max(speed - 0.01, 0) : Math.min(speed + 0.01, 0);
+
+            if (keys.ArrowLeft) myPlayer.rotation.y += rotSpeed;
+            if (keys.ArrowRight) myPlayer.rotation.y -= rotSpeed;
+
+            // Calcul future position
+            const dx = Math.sin(myPlayer.rotation.y) * speed;
+            const dz = Math.cos(myPlayer.rotation.y) * speed;
+            let nextX = myPlayer.position.x + dx;
+            let nextZ = myPlayer.position.z + dz;
+
+            // LIMITES DE LA MAP (BORDURES)
+            // Si on essaie de sortir, on annule le mouvement
+            if (nextX > HALF_MAP - 1) nextX = HALF_MAP - 1;
+            if (nextX < -HALF_MAP + 1) nextX = -HALF_MAP + 1;
+            if (nextZ > HALF_MAP - 1) nextZ = HALF_MAP - 1;
+            if (nextZ < -HALF_MAP + 1) nextZ = -HALF_MAP + 1;
+
+            myPlayer.position.x = nextX;
+            myPlayer.position.z = nextZ;
+
+            // Ajuster la hauteur (Y) selon le terrain
+            myPlayer.position.y = getTerrainHeight(myPlayer.position.x, myPlayer.position.z);
+
+            // Envoyer au serveur
+            if (speed !== 0 || keys.ArrowLeft || keys.ArrowRight) {
+                socket.emit('playerMovement', {
+                    x: myPlayer.position.x,
+                    z: myPlayer.position.z,
+                    rotation: myPlayer.rotation.y
+                });
+            }
+
+            // Rafraichir les points du radar pour les joueurs immobiles aussi
+            for (let id in otherPlayers) {
+                updateCompass(id, otherPlayers[id].position.x, otherPlayers[id].position.z);
+            }
+
+            // Caméra
+            const offset = new THREE.Vector3(0, 5, -8).applyMatrix4(myPlayer.matrixWorld);
+            camera.position.lerp(offset, 0.1);
+            camera.lookAt(myPlayer.position.x, myPlayer.position.y + 2, myPlayer.position.z);
+
+            renderer.render(scene, camera);
+        }
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth/window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+
+        animate();
+    </script>
+</body>
+</html>
