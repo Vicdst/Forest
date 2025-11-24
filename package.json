@@ -1,0 +1,15 @@
+{
+  "name": "foret-multijoueur-vicdst",
+  "version": "1.0.0",
+  "description": "Jeu 3D multijoueur dans une forêt vallonnée avec Three.js et Socket.io.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  },
+  "author": "vicdst",
+  "license": "ISC"
+}
