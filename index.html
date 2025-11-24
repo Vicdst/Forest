@@ -3,123 +3,103 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Vicdst</title>
+    <title>Bac à Sable Multijoueur 3D</title>
     <style>
-        body { margin: 0; overflow: hidden; font-family: 'Arial', sans-serif; }
+        body { margin: 0; overflow: hidden; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
         canvas { display: block; }
         
-        #ui-container, #signature, #compass-container {
-            position: absolute; z-index: 10; pointer-events: none;
+        /* UI : Radar */
+        #radar-container {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            width: 150px;
+            height: 150px;
+            background: rgba(0, 0, 0, 0.5);
+            border: 2px solid #444;
+            border-radius: 50%;
+            overflow: hidden;
         }
+        #radar-canvas { width: 100%; height: 100%; }
 
-        #ui-container { top: 20px; left: 20px; color: white; text-shadow: 1px 1px 2px black; }
-        #signature { bottom: 10px; right: 10px; color: rgba(255, 255, 255, 0.6); font-weight: bold; text-shadow: 1px 1px 1px black; }
-        #status { background-color: rgba(0,0,0,0.5); padding: 5px 10px; border-radius: 5px; font-size: 12px; margin-top: 5px; display: inline-block; }
-
-        /* --- STYLES BOUSSOLE (Identiques) --- */
-        #compass-container { top: 20px; right: 20px; width: 120px; height: 120px; background-color: rgba(0, 0, 0, 0.5); border-radius: 50%; border: 2px solid white; overflow: hidden; }
-        .blip { position: absolute; width: 6px; height: 6px; border-radius: 50%; transform: translate(-50%, -50%); }
-        #my-blip { background-color: #00ff00; width: 8px; height: 8px; top: 50%; left: 50%; z-index: 2; }
-        
-        /* --- STYLES CHAT --- */
+        /* UI : Chat Input */
         #chat-input-container {
-            position: fixed;
+            position: absolute;
             bottom: 20px;
             left: 50%;
             transform: translateX(-50%);
-            z-index: 100;
             display: none; /* Caché par défaut */
         }
         #chat-input {
-            width: 300px;
             padding: 10px;
-            font-size: 16px;
-            border: 2px solid #fff;
-            background-color: rgba(0, 0, 0, 0.8);
-            color: white;
-            border-radius: 5px;
+            width: 300px;
+            border-radius: 20px;
+            border: none;
+            outline: none;
+            background: rgba(255, 255, 255, 0.9);
         }
-        
-        /* Conteneur pour toutes les bulles de chat 3D */
-        #messages-3d-container {
-            position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            pointer-events: none; /* Très important pour ne pas bloquer le jeu */
-        }
-        
-        /* Style de la bulle de chat elle-même */
+
+        /* UI : Bulles de Chat 3D (Overlay HTML) */
         .chat-bubble {
             position: absolute;
-            background-color: rgba(0, 0, 0, 0.7);
-            color: white;
+            background: white;
             padding: 5px 10px;
-            border-radius: 15px;
-            white-space: nowrap; /* Empêche le texte de se couper */
-            font-size: 16px;
-            transform: translate(-50%, -100%); /* Centre horizontalement et monte au-dessus du point de projection */
-            pointer-events: none; 
-            opacity: 1;
-            transition: opacity 0.5s;
+            border-radius: 10px;
+            font-size: 12px;
+            pointer-events: none;
+            transform: translate(-50%, -100%);
+            white-space: nowrap;
+            opacity: 0;
+            transition: opacity 0.3s;
+            font-weight: bold;
+        }
+        .chat-visible { opacity: 1; }
+        
+        #instructions {
+            position: absolute;
+            top: 10px;
+            left: 10px;
+            color: white;
+            background: rgba(0,0,0,0.5);
+            padding: 10px;
+            border-radius: 5px;
+            pointer-events: none;
         }
     </style>
 </head>
 <body>
 
-    <div id="ui-container">
-        <h1>Forêt Plate Multijoueur</h1>
-        <div>Appuyez sur **T** pour discuter.</div>
-        <div id="status">Connexion...</div>
-    </div>
-    
-    <div id="compass-container">
-        <div id="my-blip" class="blip"></div> 
+    <div id="instructions">
+        WASD/Flèches : Bouger<br>
+        T : Parler (Entrée pour envoyer)
     </div>
 
-    <div id="messages-3d-container"></div>
-    
+    <!-- Radar -->
+    <div id="radar-container">
+        <canvas id="radar-canvas" width="150" height="150"></canvas>
+    </div>
+
+    <!-- Zone de texte pour le chat -->
     <div id="chat-input-container">
-        <input type="text" id="chat-input" placeholder="Tapez votre message et appuyez sur ENTRÉE..." maxlength="60">
+        <input type="text" id="chat-input" placeholder="Écrivez votre message..." maxlength="50">
     </div>
 
-    <div id="signature">Fait par vicdst</div>
+    <!-- Conteneur pour les bulles de chat -->
+    <div id="chat-bubbles-container"></div>
 
+    <!-- Scripts -->
+    <!-- Socket.io est servi automatiquement par le serveur Node -->
     <script src="/socket.io/socket.io.js"></script>
+    <!-- Three.js via CDN -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 
-    <script type="importmap">
-        { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
-    </script>
-
-    <script type="module">
-        import * as THREE from 'three';
-
+    <script>
+        // --- CONFIGURATION INITIALE ---
         const socket = io();
-        const otherPlayers = {}; 
-        const blips = {}; 
-        
-        // --- CHAT VARIABLES ---
-        let isChatting = false;
-        const chatInputContainer = document.getElementById('chat-input-container');
-        const chatInput = document.getElementById('chat-input');
-        const messages3DContainer = document.getElementById('messages-3d-container');
-        let activeMessages = {}; // Stocke les messages visibles { id_joueur: { element: div, vector: THREE.Vector3 } }
-
-        // --- PARAMÈTRES DE LA CARTE ---
-        const MAP_SIZE = 200; 
-        const HALF_MAP = MAP_SIZE / 2;
-
-        socket.on('connect', () => {
-            document.getElementById('status').innerText = "Connecté (En ligne)";
-            document.getElementById('status').style.color = "#00ff00";
-        });
-
-        // --- SCENE SETUP (Reste identique) ---
         const scene = new THREE.Scene();
-        const skyColor = 0x87CEEB;
-        scene.background = new THREE.Color(skyColor);
-        scene.fog = new THREE.Fog(skyColor, 20, 80); 
+        scene.background = new THREE.Color(0x87CEEB); // Ciel bleu
+        // Brouillard pour masquer les bords
+        scene.fog = new THREE.Fog(0x87CEEB, 10, 50);
 
         const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
         const renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -127,274 +107,407 @@
         renderer.shadowMap.enabled = true;
         document.body.appendChild(renderer.domElement);
 
-        // Lumières, Sol, Murs, Robots (Fonctions de création non répétées ici) ...
-        // [C'est ici qu'on mettrait la création des lumières, du sol, des murs, des robots et des arbres]
+        // --- LUMIÈRES ---
+        const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
+        scene.add(hemiLight);
+        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
+        dirLight.position.set(10, 20, 10);
+        dirLight.castShadow = true;
+        scene.add(dirLight);
 
-        // --- FONCTIONS DE CRÉATION DE MESH (Réintégrées ici pour la complétude) ---
-        function createRobot(color) {
-            const group = new THREE.Group();
-            const body = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1), new THREE.MeshStandardMaterial({ color: color }));
-            body.position.y = 0.5; body.castShadow = true; group.add(body);
-            const head = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.6, 0.6), new THREE.MeshStandardMaterial({ color: 0xFFD700 }));
-            head.position.y = 1.3; head.castShadow = true; group.add(head);
-            const eyeMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
-            const e1 = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.1), eyeMat); e1.position.set(0.15, 1.4, 0.3); group.add(e1);
-            const e2 = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.1), eyeMat); e2.position.set(-0.15, 1.4, 0.3); group.add(e2);
-            return group;
-        }
-        
-        // --- MISE EN PLACE DU MONDE (TERRAIN PLAT, MURS, ARBRES) ---
-        const geometry = new THREE.PlaneGeometry(MAP_SIZE, MAP_SIZE, 1, 1); 
-        const groundMaterial = new THREE.MeshStandardMaterial({ color: 0x2E8B57 });
-        const ground = new THREE.Mesh(geometry, groundMaterial);
+        // --- ENVIRONNEMENT ---
+        // Sol
+        const groundGeo = new THREE.PlaneGeometry(100, 100);
+        const groundMat = new THREE.MeshStandardMaterial({ color: 0x228B22 });
+        const ground = new THREE.Mesh(groundGeo, groundMat);
         ground.rotation.x = -Math.PI / 2;
         ground.receiveShadow = true;
         scene.add(ground);
 
-        // Lumières (Minimal)
-        const ambientLight = new THREE.HemisphereLight(0xffffff, 0x444444, 0.6);
-        scene.add(ambientLight);
-        const dirLight = new THREE.DirectionalLight(0xffffff, 0.8);
-        dirLight.position.set(50, 100, 50); dirLight.castShadow = true;
-        dirLight.shadow.camera.top = 50; dirLight.shadow.camera.bottom = -50;
-        dirLight.shadow.camera.left = -50; dirLight.shadow.camera.right = 50;
-        dirLight.shadow.mapSize.width = 2048; dirLight.shadow.mapSize.height = 2048;
-        scene.add(dirLight);
+        // Arbres statiques (décor)
+        function createTree(x, z) {
+            const trunkGeo = new THREE.CylinderGeometry(0.2, 0.2, 1, 8);
+            const trunkMat = new THREE.MeshStandardMaterial({ color: 0x8B4513 });
+            const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+            trunk.position.y = 0.5;
 
-        // Murs (Bordures)
-        const wallMat = new THREE.MeshBasicMaterial({ color: 0xff0000, transparent: true, opacity: 0.2, side: THREE.DoubleSide });
-        const wallGeo = new THREE.PlaneGeometry(MAP_SIZE, 20);
-        const walls = new THREE.Group();
-        const w1 = new THREE.Mesh(wallGeo, wallMat); w1.position.z = -HALF_MAP;
-        const w2 = new THREE.Mesh(wallGeo, wallMat); w2.position.z = HALF_MAP;
-        const w3 = new THREE.Mesh(wallGeo, wallMat); w3.position.x = -HALF_MAP; w3.rotation.y = Math.PI/2;
-        const w4 = new THREE.Mesh(wallGeo, wallMat); w4.position.x = HALF_MAP; w4.rotation.y = Math.PI/2;
-        walls.add(w1, w2, w3, w4);
-        walls.position.y = 10;
-        scene.add(walls);
+            const leavesGeo = new THREE.ConeGeometry(1, 2, 8);
+            const leavesMat = new THREE.MeshStandardMaterial({ color: 0x006400 });
+            const leaves = new THREE.Mesh(leavesGeo, leavesMat);
+            leaves.position.y = 1.5;
 
-        const myPlayer = createRobot(0xFF6347);
-        myPlayer.position.y = 0.01;
-        scene.add(myPlayer);
+            const tree = new THREE.Group();
+            tree.add(trunk);
+            tree.add(leaves);
+            tree.position.set(x, 0, z);
+            
+            tree.traverse((obj) => {
+                if(obj.isMesh) {
+                    obj.castShadow = true;
+                    obj.receiveShadow = true;
+                }
+            });
 
-        function createTree() {
-            const grp = new THREE.Group();
-            const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.4, 1.5, 6), new THREE.MeshStandardMaterial({ color: 0x8B4513 }));
-            trunk.position.y = 0.75; trunk.castShadow = true; grp.add(trunk);
-            const leaves = new THREE.Mesh(new THREE.ConeGeometry(1.5, 3, 6), new THREE.MeshStandardMaterial({ color: 0x228B22 }));
-            leaves.position.y = 2.2; leaves.castShadow = true; grp.add(leaves);
-            return grp;
+            scene.add(tree);
+        }
+        // Ajouter quelques arbres aléatoires
+        for(let i=0; i<20; i++) {
+            createTree((Math.random() - 0.5) * 80, (Math.random() - 0.5) * 80);
         }
 
-        for(let i=0; i<100; i++){
-            const t = createTree();
-            const tx = (Math.random() - 0.5) * (MAP_SIZE - 10);
-            const tz = (Math.random() - 0.5) * (MAP_SIZE - 10);
-            t.position.set(tx, 0, tz); 
-            scene.add(t);
+        // --- GESTION DES JOUEURS ---
+        const otherPlayers = {}; // Stocke les meshs des autres joueurs
+        let player; // Mon avatar local (Mesh)
+        let playerId; // Mon ID socket
+
+        // Création d'un avatar Robot simple
+        function createAvatar(color, isLocal) {
+            const group = new THREE.Group();
+
+            // Corps
+            const bodyGeo = new THREE.BoxGeometry(0.5, 0.8, 0.4);
+            const bodyMat = new THREE.MeshStandardMaterial({ color: color });
+            const body = new THREE.Mesh(bodyGeo, bodyMat);
+            body.position.y = 0.6; // Monter pour que les pieds soient au sol
+            body.castShadow = true;
+            group.add(body);
+
+            // Tête
+            const headGeo = new THREE.BoxGeometry(0.4, 0.4, 0.4);
+            const headMat = new THREE.MeshStandardMaterial({ color: 0x999999 });
+            const head = new THREE.Mesh(headGeo, headMat);
+            head.position.y = 1.2;
+            head.castShadow = true;
+            group.add(head);
+            
+            // Yeux (pour voir l'orientation)
+            const eyeGeo = new THREE.BoxGeometry(0.1, 0.05, 0.05);
+            const eyeMat = new THREE.MeshBasicMaterial({ color: 0x000000 });
+            const leftEye = new THREE.Mesh(eyeGeo, eyeMat);
+            leftEye.position.set(-0.1, 1.25, 0.2);
+            group.add(leftEye);
+            const rightEye = new THREE.Mesh(eyeGeo, eyeMat);
+            rightEye.position.set(0.1, 1.25, 0.2);
+            group.add(rightEye);
+
+            // Bulle de chat (DOM Element Reference, pas ajouté à la scène Three.js)
+            // On stockera la référence à l'élément DOM dans l'objet 3D pour un accès facile
+            const bubble = document.createElement('div');
+            bubble.className = 'chat-bubble';
+            document.getElementById('chat-bubbles-container').appendChild(bubble);
+            group.userData.chatBubble = bubble;
+            group.userData.chatTimer = null;
+
+            return group;
         }
 
-        // --- GESTION MULTIJOUEUR (Reste identique pour les mouvements) ---
-        function updateCompass(id, x, z) {
-            if (!blips[id]) { /* ... (Création du blip) ... */
-                const el = document.createElement('div'); el.className = 'blip'; el.style.backgroundColor = '#ff0000'; document.getElementById('compass-container').appendChild(el); blips[id] = el;
-            }
-            const radarRange = 50; 
-            const dx = x - myPlayer.position.x; const dz = z - myPlayer.position.z;
-            const cos = Math.cos(myPlayer.rotation.y); const sin = Math.sin(myPlayer.rotation.y);
-            const rx = (dx * cos - dz * sin); const ry = (dx * sin + dz * cos);
-            const screenX = (rx / radarRange) * 60; const screenY = (ry / radarRange) * 60;
-            const dist = Math.sqrt(screenX * screenX + screenY * screenY);
-            if (dist > 55) { blips[id].style.display = 'none'; } else { 
-                blips[id].style.display = 'block'; blips[id].style.left = (60 - screenX) + 'px'; blips[id].style.top = (60 + screenY) + 'px'; 
-            }
-        }
-        function addOtherPlayer(id, data) {
-            const robot = createRobot(data.color); robot.position.set(data.x, 0.01, data.z); otherPlayers[id] = robot; scene.add(robot);
-        }
-        socket.on('currentPlayers', (players) => { Object.keys(players).forEach((id) => { if (id !== socket.id) addOtherPlayer(id, players[id]); }); });
-        socket.on('newPlayer', (data) => addOtherPlayer(data.id, data.player));
-        socket.on('playerDisconnected', (id) => {
-            if (otherPlayers[id]) { scene.remove(otherPlayers[id]); delete otherPlayers[id]; }
-            if (blips[id]) { blips[id].remove(); delete blips[id]; }
+        // --- SOCKET IO LOGIQUE ---
+
+        // 1. Recevoir la liste des joueurs actuels
+        socket.on('currentPlayers', (players) => {
+            Object.keys(players).forEach((id) => {
+                if (id === socket.id) {
+                    // C'est moi
+                    addPlayer(players[id]);
+                } else {
+                    // C'est un autre
+                    addOtherPlayer(players[id]);
+                }
+            });
         });
-        socket.on('playerMoved', (data) => {
-            if (otherPlayers[data.id]) {
-                otherPlayers[data.id].position.set(data.x, 0.01, data.z); 
-                otherPlayers[data.id].rotation.y = data.rotation;
-                updateCompass(data.id, data.x, data.z);
+
+        // 2. Un nouveau joueur arrive
+        socket.on('newPlayer', (playerInfo) => {
+            addOtherPlayer(playerInfo);
+        });
+
+        // 3. Un joueur se déconnecte
+        socket.on('playerDisconnected', (id) => {
+            removeOtherPlayer(id);
+        });
+
+        // 4. Mouvement d'un autre joueur
+        socket.on('playerMoved', (playerInfo) => {
+            if (otherPlayers[playerInfo.playerId]) {
+                const p = otherPlayers[playerInfo.playerId];
+                // Interpolation simple (pourrait être améliorée avec lerp)
+                p.position.set(playerInfo.x, playerInfo.y, playerInfo.z);
+                p.rotation.y = playerInfo.rotation;
+            }
+        });
+
+        // 5. Réception d'un message Chat
+        socket.on('chatMessage', (data) => {
+            // Trouver qui a parlé
+            let targetMesh = null;
+            if (data.id === socket.id) targetMesh = player;
+            else targetMesh = otherPlayers[data.id];
+
+            if (targetMesh && targetMesh.userData.chatBubble) {
+                const bubble = targetMesh.userData.chatBubble;
+                bubble.innerText = data.text;
+                bubble.classList.add('chat-visible');
+
+                // Reset timer si existe
+                if (targetMesh.userData.chatTimer) clearTimeout(targetMesh.userData.chatTimer);
+
+                // Cacher après 5 secondes
+                targetMesh.userData.chatTimer = setTimeout(() => {
+                    bubble.classList.remove('chat-visible');
+                }, 5000);
+            }
+        });
+
+        // --- FONCTIONS UTILITAIRES JOUEURS ---
+
+        function addPlayer(playerInfo) {
+            player = createAvatar(playerInfo.color, true);
+            player.position.set(playerInfo.x, playerInfo.y, playerInfo.z);
+            scene.add(player);
+            playerId = playerInfo.playerId;
+
+            // Caméra attachée initialement
+            updateCamera();
+        }
+
+        function addOtherPlayer(playerInfo) {
+            const otherPlayer = createAvatar(playerInfo.color, false);
+            otherPlayer.position.set(playerInfo.x, playerInfo.y, playerInfo.z);
+            otherPlayer.rotation.y = playerInfo.rotation;
+            
+            otherPlayers[playerInfo.playerId] = otherPlayer;
+            scene.add(otherPlayer);
+        }
+
+        function removeOtherPlayer(id) {
+            if (otherPlayers[id]) {
+                // Supprimer bulle de chat
+                if(otherPlayers[id].userData.chatBubble) {
+                    otherPlayers[id].userData.chatBubble.remove();
+                }
+                scene.remove(otherPlayers[id]);
+                delete otherPlayers[id];
+            }
+        }
+
+        // --- CONTRÔLES ---
+        const keys = { w: false, a: false, s: false, d: false };
+        const speed = 0.1;
+        const rotateSpeed = 0.05;
+
+        document.addEventListener('keydown', (e) => {
+            // Si on écrit dans le chat, on ignore les mouvements
+            if(document.activeElement === document.getElementById('chat-input')) {
+                if(e.code === 'Enter') sendChat();
+                if(e.code === 'Escape') toggleChat(false);
+                return;
+            }
+
+            switch(e.key.toLowerCase()) {
+                case 'w': case 'arrowup': keys.w = true; break;
+                case 'a': case 'arrowleft': keys.a = true; break;
+                case 's': case 'arrowdown': keys.s = true; break;
+                case 'd': case 'arrowright': keys.d = true; break;
+                case 't': 
+                    e.preventDefault(); 
+                    toggleChat(true); 
+                    break;
+            }
+        });
+
+        document.addEventListener('keyup', (e) => {
+            switch(e.key.toLowerCase()) {
+                case 'w': case 'arrowup': keys.w = false; break;
+                case 'a': case 'arrowleft': keys.a = false; break;
+                case 's': case 'arrowdown': keys.s = false; break;
+                case 'd': case 'arrowright': keys.d = false; break;
             }
         });
 
         // --- LOGIQUE CHAT ---
-
-        function displayMessage(playerId, message) {
-            const target = (playerId === socket.id) ? myPlayer : otherPlayers[playerId];
-            if (!target) return;
-
-            // 1. Suppression de l'ancien message (s'il existe)
-            if (activeMessages[playerId]) {
-                activeMessages[playerId].element.remove();
-                clearTimeout(activeMessages[playerId].timeout);
+        function toggleChat(show) {
+            const inputContainer = document.getElementById('chat-input-container');
+            const input = document.getElementById('chat-input');
+            if(show) {
+                inputContainer.style.display = 'block';
+                input.focus();
+                // Reset les touches de mouvement pour éviter que le perso continue de courir
+                keys.w = keys.a = keys.s = keys.d = false; 
+            } else {
+                inputContainer.style.display = 'none';
+                input.blur();
             }
-
-            // 2. Création de la bulle HTML
-            const bubble = document.createElement('div');
-            bubble.className = 'chat-bubble';
-            bubble.innerText = message;
-            messages3DContainer.appendChild(bubble);
-
-            // 3. Création du vecteur 3D pour la projection (position au-dessus de la tête)
-            const textVector = new THREE.Vector3(target.position.x, target.position.y + 3, target.position.z);
-            
-            // 4. Stockage du message actif
-            activeMessages[playerId] = {
-                element: bubble,
-                vector: textVector,
-                mesh: target,
-                timeout: null
-            };
-
-            // 5. Suppression après 5 secondes
-            activeMessages[playerId].timeout = setTimeout(() => {
-                // Fading out
-                bubble.style.opacity = '0'; 
-                setTimeout(() => { // Après la transition CSS (0.5s), supprimer l'élément
-                    bubble.remove();
-                    delete activeMessages[playerId];
-                }, 500);
-            }, 5000);
         }
 
-        // Réception du message du serveur
-        socket.on('receiveMessage', (data) => {
-            displayMessage(data.id, data.message);
-        });
-
-        // Gestion de la touche T pour ouvrir le chat
-        document.addEventListener('keydown', (event) => {
-            if (event.code === 'KeyT' && !isChatting) {
-                event.preventDefault(); // Empêche le 't' d'être tapé
-                isChatting = true;
-                chatInputContainer.style.display = 'block';
-                chatInput.focus();
+        function sendChat() {
+            const input = document.getElementById('chat-input');
+            const msg = input.value;
+            if(msg.trim().length > 0) {
+                socket.emit('chatMessage', msg);
             }
-        });
+            input.value = '';
+            toggleChat(false);
+        }
 
-        // Gestion de l'envoi (touche ENTRÉE) ou de l'annulation (touche ESC)
-        chatInput.addEventListener('keydown', (event) => {
-            if (event.key === 'Enter') {
-                const message = chatInput.value.trim();
-                if (message) {
-                    socket.emit('sendMessage', { message: message });
-                }
-                
-                // Cacher l'interface et réactiver les contrôles
-                chatInput.value = '';
-                chatInput.blur();
-                chatInputContainer.style.display = 'none';
-                isChatting = false;
-            } else if (event.key === 'Escape') {
-                // Annuler
-                chatInput.value = '';
-                chatInput.blur();
-                chatInputContainer.style.display = 'none';
-                isChatting = false;
-            }
-        });
-
-        // --- BOUCLE DE JEU & PROJECTION 3D -> 2D ---
-        const keys = { ArrowUp:false, ArrowDown:false, ArrowLeft:false, ArrowRight:false };
-        window.addEventListener('keydown', e => { 
-            if (!isChatting && keys.hasOwnProperty(e.code)) keys[e.code]=true; 
-        });
-        window.addEventListener('keyup', e => { 
-            if (keys.hasOwnProperty(e.code)) keys[e.code]=false; 
-        });
-
-        let speed = 0; const maxSpeed = 0.3; const rotSpeed = 0.05;
-
+        // --- BOUCLE DE JEU ---
         function animate() {
             requestAnimationFrame(animate);
 
-            // Le mouvement n'est possible que si on n'est PAS en train de discuter
-            if (!isChatting) {
-                // Mouvement Local
-                if (keys.ArrowUp) speed = Math.min(speed + 0.01, maxSpeed);
-                else if (keys.ArrowDown) speed = Math.max(speed - 0.01, -maxSpeed/2);
-                else speed = speed > 0 ? Math.max(speed - 0.01, 0) : Math.min(speed + 0.01, 0);
+            if (player) {
+                let moved = false;
 
-                if (keys.ArrowLeft) myPlayer.rotation.y += rotSpeed;
-                if (keys.ArrowRight) myPlayer.rotation.y -= rotSpeed;
-                
-                // ... (Logique de déplacement et de bordure) ...
-                const dx = Math.sin(myPlayer.rotation.y) * speed;
-                const dz = Math.cos(myPlayer.rotation.y) * speed;
-                let nextX = myPlayer.position.x + dx;
-                let nextZ = myPlayer.position.z + dz;
+                // Rotation
+                if (keys.a) { player.rotation.y += rotateSpeed; moved = true; }
+                if (keys.d) { player.rotation.y -= rotateSpeed; moved = true; }
 
-                // LIMITES DE LA MAP
-                if (nextX > HALF_MAP - 1) nextX = HALF_MAP - 1;
-                if (nextX < -HALF_MAP + 1) nextX = -HALF_MAP + 1;
-                if (nextZ > HALF_MAP - 1) nextZ = HALF_MAP - 1;
-                if (nextZ < -HALF_MAP + 1) nextZ = -HALF_MAP + 1;
-
-                myPlayer.position.x = nextX;
-                myPlayer.position.z = nextZ;
-                myPlayer.position.y = 0.01; 
-
-                // Envoyer au serveur (uniquement si on bouge)
-                if (speed !== 0 || keys.ArrowLeft || keys.ArrowRight) {
-                    socket.emit('playerMovement', { x: myPlayer.position.x, z: myPlayer.position.z, rotation: myPlayer.rotation.y });
+                // Mouvement avant/arrière
+                if (keys.w || keys.s) {
+                    const dir = keys.w ? 1 : -1;
+                    const dx = Math.sin(player.rotation.y) * speed * dir;
+                    const dz = Math.cos(player.rotation.y) * speed * dir;
+                    
+                    // Vérification simple des limites (Monde de 100x100 -> -50 à 50)
+                    if(player.position.x + dx < 48 && player.position.x + dx > -48) player.position.x += dx;
+                    if(player.position.z + dz < 48 && player.position.z + dz > -48) player.position.z += dz;
+                    
+                    moved = true;
                 }
-            } else {
-                // Si on discute, on arrête le mouvement
-                speed = 0;
+
+                if (moved) {
+                    updateCamera();
+                    // Envoyer le mouvement au serveur
+                    socket.emit('playerMovement', {
+                        x: player.position.x,
+                        y: player.position.y,
+                        z: player.position.z,
+                        rotation: player.position.rotation.y
+                    });
+                }
+
+                // Mettre à jour la position des bulles de chat (Projection 3D -> 2D)
+                updateChatBubblePosition(player);
             }
 
-            // Rafraichir le radar pour tous les autres joueurs
-            for (let id in otherPlayers) {
-                updateCompass(id, otherPlayers[id].position.x, otherPlayers[id].position.z);
-            }
+            // Mettre à jour bulles des autres
+            Object.values(otherPlayers).forEach(p => updateChatBubblePosition(p));
 
-            // --- MISE À JOUR DE LA POSITION DES BULLES DE CHAT (PROJECTION) ---
-            for (const id in activeMessages) {
-                const msg = activeMessages[id];
-                const player = msg.mesh;
-                
-                // Mettre à jour la position 3D si le joueur bouge
-                msg.vector.set(player.position.x, player.position.y + 3, player.position.z);
-
-                // Projection de la position 3D vers l'écran 2D
-                msg.vector.project(camera);
-
-                // Calcul des coordonnées 2D
-                const x = (msg.vector.x * 0.5 + 0.5) * window.innerWidth;
-                const y = (-msg.vector.y * 0.5 + 0.5) * window.innerHeight;
-
-                // Mettre à jour la position CSS
-                msg.element.style.left = `${x}px`;
-                msg.element.style.top = `${y}px`;
-                
-                // Gérer l'opacité (cacher si la bulle est derrière la caméra)
-                msg.element.style.display = (msg.vector.z > 1) ? 'none' : 'block';
-            }
-
-            // Caméra
-            const offset = new THREE.Vector3(0, 5, -8).applyMatrix4(myPlayer.matrixWorld);
-            camera.position.lerp(offset, 0.1);
-            camera.lookAt(myPlayer.position.x, myPlayer.position.y + 2, myPlayer.position.z);
-
+            updateRadar();
             renderer.render(scene, camera);
         }
 
+        function updateCamera() {
+            // Caméra TPS (Third Person) : Derrière et au-dessus
+            const relativeOffset = new THREE.Vector3(0, 5, -8);
+            const cameraOffset = relativeOffset.applyMatrix4(player.matrixWorld);
+            camera.position.x = cameraOffset.x;
+            camera.position.y = cameraOffset.y;
+            camera.position.z = cameraOffset.z;
+            camera.lookAt(player.position);
+        }
+
+        function updateChatBubblePosition(mesh) {
+            if(!mesh || !mesh.userData.chatBubble) return;
+            
+            const bubble = mesh.userData.chatBubble;
+            
+            // Position de la tête (approximative)
+            const pos = mesh.position.clone();
+            pos.y += 2.0; // Au-dessus de la tête
+
+            // Projection écran
+            pos.project(camera);
+
+            const x = (pos.x * .5 + .5) * window.innerWidth;
+            const y = (-(pos.y * .5) + .5) * window.innerHeight;
+
+            // Cacher si derrière la caméra
+            if(pos.z > 1) {
+                bubble.style.display = 'none';
+            } else {
+                bubble.style.display = 'block';
+                bubble.style.left = `${x}px`;
+                bubble.style.top = `${y}px`;
+            }
+        }
+
+        // --- RADAR ---
+        const radarCanvas = document.getElementById('radar-canvas');
+        const radarCtx = radarCanvas.getContext('2d');
+        const radarSize = 150;
+        const radarRange = 40; // Rayon de détection in-game
+
+        function updateRadar() {
+            if (!player) return;
+
+            // Fond
+            radarCtx.fillStyle = '#000';
+            radarCtx.fillRect(0, 0, radarSize, radarSize);
+
+            // Lignes
+            radarCtx.strokeStyle = '#333';
+            radarCtx.beginPath();
+            radarCtx.moveTo(radarSize/2, 0);
+            radarCtx.lineTo(radarSize/2, radarSize);
+            radarCtx.moveTo(0, radarSize/2);
+            radarCtx.lineTo(radarSize, radarSize/2);
+            radarCtx.stroke();
+
+            // Dessiner les autres joueurs
+            Object.values(otherPlayers).forEach(p => {
+                // Position relative
+                const dx = p.position.x - player.position.x;
+                const dz = p.position.z - player.position.z;
+
+                // Rotation par rapport à MON orientation (pour que "Haut" sur radar = "Devant moi")
+                // On inverse la rotation du joueur pour tourner le monde autour de lui
+                const angle = -player.rotation.y; 
+                const rx = dx * Math.cos(angle) - dz * Math.sin(angle);
+                const ry = dx * Math.sin(angle) + dz * Math.cos(angle); // ry correspond au Z local
+
+                // Mapping sur le canvas
+                // ry devient le Y du canvas (inversé car -Z est devant en ThreeJS, mais +Y est bas en Canvas... 
+                // En ThreeJS: -Z est devant.
+                // Ici on veut que si l'ennemi est DEVANT (z < 0 local), il soit en HAUT du radar (y < center).
+                
+                const scale = (radarSize / 2) / radarRange;
+                
+                // Si dans la portée
+                if (Math.abs(rx) < radarRange && Math.abs(ry) < radarRange) {
+                    const cx = (radarSize / 2) + rx * scale;
+                    const cy = (radarSize / 2) - ry * scale; // Inversion Z -> Y écran
+
+                    radarCtx.fillStyle = 'red';
+                    radarCtx.beginPath();
+                    radarCtx.arc(cx, cy, 3, 0, Math.PI * 2);
+                    radarCtx.fill();
+                }
+            });
+
+            // Moi (Centre)
+            radarCtx.fillStyle = '#0f0';
+            radarCtx.beginPath();
+            radarCtx.arc(radarSize/2, radarSize/2, 4, 0, Math.PI * 2);
+            radarCtx.fill();
+            
+            // Cône de vision
+            radarCtx.strokeStyle = 'rgba(0, 255, 0, 0.3)';
+            radarCtx.beginPath();
+            radarCtx.moveTo(radarSize/2, radarSize/2);
+            radarCtx.lineTo(radarSize/2 - 10, radarSize/2 - 20);
+            radarCtx.moveTo(radarSize/2, radarSize/2);
+            radarCtx.lineTo(radarSize/2 + 10, radarSize/2 - 20);
+            radarCtx.stroke();
+        }
+
+        // Redimensionnement
         window.addEventListener('resize', () => {
-            camera.aspect = window.innerWidth/window.innerHeight;
+            camera.aspect = window.innerWidth / window.innerHeight;
             camera.updateProjectionMatrix();
             renderer.setSize(window.innerWidth, window.innerHeight);
         });
 
         animate();
+
     </script>
 </body>
 </html>
